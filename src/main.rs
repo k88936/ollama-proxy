@@ -13,7 +13,8 @@ use http_body_util::BodyExt;
 use std::env;
 use tracing_subscriber;
 use tracing::{info, error, debug};
-
+use std::fs;
+use std::path::Path;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -24,6 +25,23 @@ async fn main() -> Result<()> {
 
     // 加载.env文件
     dotenv().ok();
+
+    // 获取配置文件路径，尝试多种可能的路径
+    let config_path = get_config_path();
+
+    // 如果配置文件不存在，创建示例配置文件
+    if !config_path.exists() {
+        let example_config = r#"# Ollama Proxy Configuration
+# USER=your_username
+# PASS=your_password
+# REMOTE=https://api.example.com
+"#;
+        fs::write(&config_path, example_config)?;
+        info!("已创建示例配置文件: {:?}", config_path);
+    }
+
+    // 从配置文件加载环境变量
+    dotenvy::from_filename(config_path.to_str().unwrap()).ok();
 
     // 获取环境变量中的认证信息
     let username = env::var("USER")?;
@@ -180,4 +198,19 @@ impl IntoResponse for AppError {
         )
             .into_response()
     }
+}
+
+// 新增函数：获取跨平台配置文件路径
+fn get_config_path() -> std::path::PathBuf {
+
+    // 尝试获取 HOME 目录 (Unix/Linux/macOS)
+    if let Ok(home_dir) = env::var("HOME") {
+        return Path::new(&home_dir).join(".ollama-proxy");
+    }
+    
+    // 尝试获取 USERPROFILE 目录 (Windows)
+    if let Ok(home_dir) = env::var("USERPROFILE") {
+        return Path::new(&home_dir).join(".ollama-proxy");
+    }
+    panic!("cant get user home")
 }
