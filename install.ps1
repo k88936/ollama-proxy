@@ -46,12 +46,18 @@ try {
     nssm set $serviceName Start SERVICE_AUTO_START
     nssm set $serviceName AppDirectory $scriptDir
     nssm set $serviceName AppEnvironmentExtra "USERPROFILE=$env:USERPROFILE"
+    # Set service recovery options to restart unless manually stopped
+    nssm set $serviceName AppExit Default Restart
+    nssm set $serviceName AppRestartDelay 10000
+    nssm set $serviceName AppThrottle 15000
+    nssm set $serviceName AppExitPostScript 1
     
     # Start the service
     Start-Service $serviceName
     
     Write-Host "Successfully installed and started $serviceName" -ForegroundColor Green
     Write-Host "Service is now running as user $username" -ForegroundColor Green
+    Write-Host "Service will restart automatically unless manually stopped" -ForegroundColor Green
 } catch {
     Write-Host "Error installing service: $_" -ForegroundColor Red
     exit 1

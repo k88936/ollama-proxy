@@ -13,7 +13,8 @@ try {
 
 # Stop service if it's running
 try {
-    Stop-Service $serviceName -Force -ErrorAction SilentlyContinue
+    # 使用NSSM停止服务而不是直接Stop-Service
+    nssm stop $serviceName 2>$null
     Write-Host "Stopped service $serviceName" -ForegroundColor Green
 } catch {
     Write-Host "Service $serviceName was not running or doesn't exist" -ForegroundColor Yellow
