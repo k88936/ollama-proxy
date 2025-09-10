@@ -13,7 +13,7 @@ if (!(Test-Path $exePath)) {
 }
 
 # Create the service
-$serviceName = "OllamaProxy"
+$serviceName = "ollama-proxy"
 $username = $env:USERNAME
 
 # Using NSSM (Non-Sucking Service Manager) to install as user service

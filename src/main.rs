@@ -1,213 +1,298 @@
-use anyhow::Result;
+use axum::middleware::Next;
+use axum::routing::{get, post};
+use futures_util::TryStreamExt;
+// Make sure this is in scope
+use std::path::Path;
+use std::{env, fs};
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tracing::info;
+mod models;
+mod providers;
+
+use providers::Provider;
+
+struct AppState {
+    provider: Box<dyn Provider + Send + Sync>,
+}
+
+use crate::models::{ChatRequest, GenerateRequest, GenerateResponse, ModelsResponse};
+use crate::providers::openai_provider::OpenAIProvider;
+use axum::http::Request;
 use axum::{
-    body::Body,
-    extract::Request,
-    http::{header, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
-    routing::any,
+    extract::{Json, State},
+    http::StatusCode,
+    response::IntoResponse,
     Router,
 };
-use base64::{engine::general_purpose, Engine as _};
-use dotenvy::dotenv;
-use http_body_util::BodyExt;
-use std::env;
-use tracing_subscriber;
-use tracing::{info, error, debug};
-use std::fs;
-use std::path::Path;
+use futures::StreamExt;
+use indoc::indoc;
+use std::sync::Arc;
+use crate::providers::ollama_provider::OllamaProvider;
+
+/// Collects all content from a chat stream and concatenates it into a single string
+async fn collect_content_from_stream(
+    mut stream: crate::providers::ChatChunkStream,
+) -> Result<String, ()> {
+    let mut content = String::new();
+
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(chunk) => {
+                if !chunk.done {
+                    content.push_str(&chunk.message.content);
+                }
+            }
+            Err(_) => return Err(()),
+        }
+    }
+
+    Ok(content)
+}
+
+async fn handle_status(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
+    "Ollama is running".to_string()
+}
+
+async fn handle_tags(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ModelsResponse>, (StatusCode, String)> {
+    // Lock the state for mutation
+    let models = state.provider.get_models().await.unwrap();
+    Ok(Json(ModelsResponse { models }))
+}
+
+async fn handle_generate(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<GenerateRequest>,
+) -> Result<Json<GenerateResponse>, (StatusCode, String)> {
+    // Create a simple message for chat
+    let messages = vec![crate::models::Message {
+        role: "user".to_string(),
+        content: payload.prompt.clone(),
+    }];
+
+    // Use the provider's chat_stream method to generate response
+    let stream = match state
+        .provider
+        .chat(&payload.model, &messages, payload.options.clone())
+    {
+        Ok(stream) => stream,
+        Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate response".to_string(),
+            ));
+        }
+    };
+
+    // Collect all chunks from stream and concatenate content
+    let content = match collect_content_from_stream(stream).await {
+        Ok(content) => content,
+        Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate response".to_string(),
+            ));
+        }
+    };
+
+    let resp = GenerateResponse {
+        model: payload.model,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        response: content,
+        done: true,
+        context: None,
+        total_duration: 0,
+        load_duration: 0,
+        prompt_eval_count: 0,
+        eval_count: 0,
+        eval_duration: 0,
+    };
+
+    Ok(Json(resp))
+}
+
+async fn handle_chat(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ChatRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Use streaming method for both streaming and non-streaming requests
+    let stream = match state.provider.chat(
+        &payload.model,
+        &payload.messages,
+        payload.options.clone(),
+    ) {
+        Ok(stream) => stream,
+        Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate response".to_string(),
+            ));
+        }
+    };
+
+    let stream_mode = payload.stream.unwrap_or(true);
+    if !stream_mode {
+        // Non-streaming: collect all chunks from stream and concatenate content
+        let content = match collect_content_from_stream(stream).await {
+            Ok(content) => content,
+            Err(_) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to generate response".to_string(),
+                ));
+            }
+        };
+
+        let resp = models::ChatResponse {
+            model: payload.model,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            message: crate::models::Message {
+                role: "assistant".to_string(),
+                content,
+            },
+            done: true,
+            total_duration: 0,
+            load_duration: 0,
+            prompt_eval_count: 0,
+            eval_count: 0,
+            eval_duration: 0,
+        };
+
+        Ok(Json(resp).into_response())
+    } else {
+        // Streaming mode: return stream as before
+        Ok((
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "application/x-ndjson".to_string(),
+            )],
+            axum::body::Body::from_stream(
+                stream
+                    .map(|obj| serde_json::to_string(&obj.unwrap())) // This returns Result<String, _>
+                    .map_ok(|s| format!("{}\n", s)), // ✅ Transform Ok(String) -> Ok(String + \n)
+            ),
+        )
+            .into_response())
+    }
+}
+// 处理未匹配路由的函数
+async fn not_found() -> (StatusCode, String) {
+    info!("=== Unmatched Route Request ===");
+    (StatusCode::NOT_FOUND, "Endpoint not found".to_string())
+}
+
+// 一个中间件: 记录所有请求的详细信息
+async fn log_request_middleware(
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> impl IntoResponse {
+    // 记录请求的详细信息
+    info!("=== Incoming Request ===");
+    info!("Method: {}", request.method());
+    info!("URI: {}", request.uri());
+    info!("Version: {:?}", request.version());
+    info!("Headers:");
+    for (name, value) in request.headers() {
+        info!("  {}: {:?}", name, value);
+    }
+
+    // 继续处理请求
+    let response = next.run(request).await;
+
+    // 记录响应信息
+    info!("=== Response ===");
+    info!("Status: {}", response.status());
+    info!("Headers:");
+    for (name, value) in response.headers() {
+        info!("  {}: {:?}", name, value);
+    }
+
+    response
+}
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    // 初始化日志记录器，确保控制台输出
+async fn main() {
+    // 初始化日志记录
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
+        .with_max_level(tracing::Level::INFO)
         .init();
 
-    // 加载.env文件
-    dotenv().ok();
-
+    info!("Starting fake Ollama API server...");
     // 获取配置文件路径，尝试多种可能的路径
     let config_path = get_config_path();
 
     // 如果配置文件不存在，创建示例配置文件
     if !config_path.exists() {
-        let example_config = r#"# Ollama Proxy Configuration
-# USER=your_username
-# PASS=your_password
-# REMOTE=https://api.example.com
-"#;
-        fs::write(&config_path, example_config)?;
+        let example_config = indoc! { r#"
+            # USE=ollama
+            # #Remote Ollama Proxy Configuration
+            # OLLAMA_USER=your_username
+            # OLLAMA_PASS=your_password
+            # OLLAMA_BASE_URL=https://api.example.com
+            #
+            # USE=openai
+            # #Openai api Configuration
+            # OPENAI_API_KEY=your_api_key
+            # OPENAI_BASE_URL=https://api.example.com
+            # MODELS=qwen3-coder-plus,qwen3
+            "#};
+        fs::write(&config_path, example_config).unwrap();
         info!("已创建示例配置文件: {:?}", config_path);
+        return;
     }
 
     // 从配置文件加载环境变量
     dotenvy::from_filename(config_path.to_str().unwrap()).ok();
 
-    // 获取环境变量中的认证信息
-    let username = env::var("USER")?;
-    let password = env::var("PASS")?;
-    let target_url = env::var("REMOTE")?;
-
-    // 将用户名和密码编码为基本认证头部
-    let credentials = format!("{}:{}", username, password);
-    let encoded_credentials = general_purpose::STANDARD.encode(credentials);
-    let auth_header = format!("Basic {}", encoded_credentials);
-
-    info!("代理服务器配置加载完成");
-    info!("目标服务器: {}", target_url);
-    
-    // 将认证信息存储在应用状态中
-    let app_state = AppState {
-        auth_header,
-        target_url,
+    let provider_use = env::var("USE").unwrap();
+    let provider: Box<dyn Provider + Send + Sync> = match provider_use.as_str() {
+        "ollama" => {
+            // 获取环境变量中的认证信息
+            let user = env::var("OLLAMA_USER").unwrap();
+            let password = env::var("OLLAMA_PASS").unwrap();
+            let url = env::var("OLLAMA_BASE_URL").unwrap();
+            Box::new(OllamaProvider::new(url, user, password))
+        }
+        "openai" => {
+            let api_key = env::var("OPENAI_API_KEY").unwrap();
+            let url = env::var("OPENAI_BASE_URL").unwrap();
+            let models = env::var("MODELS")
+                .unwrap()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect::<Vec<String>>();
+            Box::new(OpenAIProvider::new(api_key, url, models))
+        }
+        _ => panic!("provider not found"),
     };
 
-    // 构建应用路由
-    let app = Router::new()
-        .route("/", any(proxy_handler))
-        .route("/*path", any(proxy_handler))
-        .with_state(app_state);
+    let state = AppState { provider };
+    let state = Arc::new(state);
+    let app: Router = Router::new()
+        .route("/", get(handle_status))
+        .route("/api/tags", get(handle_tags))
+        .route("/api/generate", post(handle_generate))
+        .route("/api/chat", post(handle_chat))
+        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http())
+        .fallback(not_found) // 处理未匹配的路由
+        .with_state(state)
+        .layer(axum::middleware::from_fn(log_request_middleware)); // 应用日志中间件到所有路由
 
-    // 启动服务器
     let listener = tokio::net::TcpListener::bind("127.0.0.1:11434")
-        .await?;
-    info!("代理服务器启动成功，监听地址: 127.0.0.1:11434");
+        .await
+        .unwrap();
+    info!("🚀 Fake Ollama API server listening on http://localhost:11434");
 
-    axum::serve(listener, app).await?;
-    Ok(())
+    axum::serve(listener, app).await.unwrap();
 }
-
-// 应用状态，包含认证头部和目标URL
-#[derive(Clone)]
-struct AppState {
-    auth_header: String,
-    target_url: String,
-}
-
-// 代理处理函数
-async fn proxy_handler(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    req: Request,
-) -> Result<impl IntoResponse, AppError> {
-    let request_method = req.method().clone();
-    let request_path = req.uri().path().to_string();
-    
-    info!("接收到请求: {} {}", request_method, request_path);
-    debug!("请求头: {:?}", req.headers());
-    
-    // 构建目标URL
-    let mut target_url = state.target_url.clone();
-    if let Some(path) = req.uri().path_and_query() {
-        target_url.push_str(path.as_str());
-    }
-    
-    info!("转发请求到: {}", target_url);
-
-    // 创建HTTP客户端
-    let client = reqwest::Client::new();
-
-    // 转发请求
-    let mut request_builder = client.request(req.method().clone(), &target_url);
-    
-    // 复制请求头部，但跳过HOST头部
-    for (name, value) in req.headers() {
-        // 不转发HOST头部，让reqwest自己设置
-        if name != header::HOST {
-            request_builder = request_builder.header(name, value);
-        }
-    }
-
-    // 添加基本认证头部
-    request_builder = request_builder.header(
-        header::AUTHORIZATION,
-        HeaderValue::from_str(&state.auth_header).map_err(anyhow::Error::from)?,
-    );
-
-    // 获取请求体
-    let body_bytes = req.into_body().collect().await?.to_bytes();
-    
-    debug!("请求体大小: {} 字节", body_bytes.len());
-    
-    // 添加请求体
-    if !body_bytes.is_empty() {
-        request_builder = request_builder.body(body_bytes);
-    }
-
-    // 发送请求
-    let response = request_builder.send().await.map_err(|e| {
-        error!("转发请求失败: {}", e);
-        AppError::from(e)
-    })?;
-
-    let status = response.status();
-    info!("收到目标服务器响应: 状态码 {}", status);
-    debug!("响应头: {:?}", response.headers());
-
-    // 构建响应
-    let mut builder = Response::builder().status(status);
-
-    // 复制响应头部，但过滤掉可能引起问题的头部
-    for (name, value) in response.headers() {
-        // 跳过可能导致问题的头部
-        if name != header::TRANSFER_ENCODING && name != header::CONNECTION {
-            builder = builder.header(name, value);
-        }
-    }
-
-    // 获取响应体
-    let body_bytes = response.bytes().await.map_err(|e| {
-        error!("读取响应体失败: {}", e);
-        AppError::from(e)
-    })?;
-    
-    debug!("响应体大小: {} 字节", body_bytes.len());
-    info!("请求处理完成: {} {} -> 状态码 {}", request_method, request_path, status);
-
-    // 构建最终响应
-    let response_body = Body::from(body_bytes);
-    let final_response = builder.body(response_body).map_err(|e| {
-        error!("构建响应失败: {}", e);
-        AppError::from(e)
-    })?;
-    
-    Ok(final_response)
-}
-
-// 自定义错误类型
-#[derive(Debug)]
-struct AppError(anyhow::Error);
-
-// 错误处理
-impl<E> From<E> for AppError
-where
-    E: Into<anyhow::Error> + std::fmt::Display,
-{
-    fn from(err: E) -> Self {
-        error!("处理请求时发生错误: {}", err);
-        Self(err.into())
-    }
-}
-
-// 实现IntoResponse特征以便在处理函数中使用
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        error!("返回错误响应: {}", self.0);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("出错了: {}", self.0),
-        )
-            .into_response()
-    }
-}
-
-// 新增函数：获取跨平台配置文件路径
 fn get_config_path() -> std::path::PathBuf {
-
     // 尝试获取 HOME 目录 (Unix/Linux/macOS)
     if let Ok(home_dir) = env::var("HOME") {
         return Path::new(&home_dir).join(".ollama-proxy");
     }
-    
+
     // 尝试获取 USERPROFILE 目录 (Windows)
     if let Ok(home_dir) = env::var("USERPROFILE") {
         return Path::new(&home_dir).join(".ollama-proxy");

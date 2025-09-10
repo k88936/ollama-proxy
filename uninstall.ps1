@@ -1,7 +1,7 @@
 # Ollama Proxy Service Uninstaller
 # Uninstalls the Windows service
 
-$serviceName = "OllamaProxy"
+$serviceName = "ollama-proxy"
 
 # Check if NSSM is available
 try {
