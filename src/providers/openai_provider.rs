@@ -66,6 +66,7 @@ impl OpenAIProvider {
         let mut body = json!({
             "model": model,
             "messages": msgs,
+            "stream": true,
         });
 
         // Merge options if provided
@@ -83,53 +84,6 @@ impl OpenAIProvider {
 
 #[async_trait::async_trait]
 impl Provider for OpenAIProvider {
-    async fn chat(
-        &self,
-        model: &String,
-        messages: &[Message],
-        option: Option<Value>,
-    ) -> Result<String, ProviderError> {
-        let client = self.build_client()?;
-
-        let url = format!(
-            "{}/v1/chat/completions",
-            self.base_url.trim_end_matches('/')
-        );
-
-        let body = self.build_request_body(model, messages, option);
-
-        let response = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ProviderError {
-                message: format!("HTTP request failed: {}", e),
-            })?;
-
-        let response_text = response.text().await.map_err(|e| ProviderError {
-            message: format!("Failed to read response: {}", e),
-        })?;
-
-        // Parse the response to extract content
-        let parsed: serde_json::Value =
-            serde_json::from_str(&response_text).map_err(|e| ProviderError {
-                message: format!("Failed to parse JSON response: {}", e),
-            })?;
-
-        let content = parsed
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|choice| choice.get("message"))
-            .and_then(|msg| msg.get("content"))
-            .and_then(|content| content.as_str())
-            .unwrap_or("No content received")
-            .to_string();
-
-        Ok(content)
-    }
 
     fn chat_stream(
         &self,
@@ -144,12 +98,7 @@ impl Provider for OpenAIProvider {
             self.base_url.trim_end_matches('/')
         );
 
-        let mut body = self.build_request_body(model, messages, option);
-
-        // Enable streaming
-        if let Some(obj) = body.as_object_mut() {
-            obj.insert("stream".to_string(), json!(true));
-        }
+        let  body = self.build_request_body(model, messages, option);
 
         let key = self.key.clone();
         let model_name = model.clone();

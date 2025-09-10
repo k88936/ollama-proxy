@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Model {
@@ -25,7 +25,7 @@ pub struct Message {
     pub content: String,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize,Serialize)]
 pub struct ModelsResponse {
     pub models: Vec<Model>,
 }

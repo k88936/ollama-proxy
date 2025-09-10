@@ -26,8 +26,28 @@ use axum::{
 };
 use futures::StreamExt;
 use indoc::indoc;
-use serde_json::to_string;
 use std::sync::Arc;
+use crate::providers::ollama_provider::OllamaProvider;
+
+/// Collects all content from a chat stream and concatenates it into a single string
+async fn collect_content_from_stream(
+    mut stream: crate::providers::ChatChunkStream,
+) -> Result<String, ()> {
+    let mut content = String::new();
+
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(chunk) => {
+                if !chunk.done {
+                    content.push_str(&chunk.message.content);
+                }
+            }
+            Err(_) => return Err(()),
+        }
+    }
+
+    Ok(content)
+}
 
 async fn handle_status(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
     "Ollama is running".to_string()
@@ -45,21 +65,29 @@ async fn handle_generate(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<GenerateRequest>,
 ) -> Result<Json<GenerateResponse>, (StatusCode, String)> {
-    // Find the model
-
     // Create a simple message for chat
     let messages = vec![crate::models::Message {
         role: "user".to_string(),
         content: payload.prompt.clone(),
     }];
 
-    // Use the provider's chat method to generate response
-    let response = match state
+    // Use the provider's chat_stream method to generate response
+    let stream = match state
         .provider
-        .chat(&payload.model, &messages, payload.options.clone())
-        .await
+        .chat_stream(&payload.model, &messages, payload.options.clone())
     {
-        Ok(response) => response,
+        Ok(stream) => stream,
+        Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate response".to_string(),
+            ));
+        }
+    };
+
+    // Collect all chunks from stream and concatenate content
+    let content = match collect_content_from_stream(stream).await {
+        Ok(content) => content,
         Err(_) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -71,7 +99,7 @@ async fn handle_generate(
     let resp = GenerateResponse {
         model: payload.model,
         created_at: chrono::Utc::now().to_rfc3339(),
-        response,
+        response: content,
         done: true,
         context: Some(vec![1, 2, 3]),
         total_duration: 0,
@@ -88,17 +116,26 @@ async fn handle_chat(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ChatRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Find the model
+    // Use streaming method for both streaming and non-streaming requests
+    let stream = match state.provider.chat_stream(
+        &payload.model,
+        &payload.messages,
+        payload.options.clone(),
+    ) {
+        Ok(stream) => stream,
+        Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate response".to_string(),
+            ));
+        }
+    };
 
     let stream_mode = payload.stream.unwrap_or(true);
     if !stream_mode {
-        // Non-streaming: return final response
-        let response = match state
-            .provider
-            .chat(&payload.model, &payload.messages, payload.options.clone())
-            .await
-        {
-            Ok(response) => response,
+        // Non-streaming: collect all chunks from stream and concatenate content
+        let content = match collect_content_from_stream(stream).await {
+            Ok(content) => content,
             Err(_) => {
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -112,7 +149,7 @@ async fn handle_chat(
             created_at: chrono::Utc::now().to_rfc3339(),
             message: crate::models::Message {
                 role: "assistant".to_string(),
-                content: response,
+                content,
             },
             done: true,
             total_duration: 0,
@@ -124,21 +161,7 @@ async fn handle_chat(
 
         Ok(Json(resp).into_response())
     } else {
-        // Streaming mode: use provider's chat_stream method
-        let stream = match state.provider.chat_stream(
-            &payload.model,
-            &payload.messages,
-            payload.options.clone(),
-        ) {
-            Ok(stream) => stream,
-            Err(_) => {
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to generate stream response".to_string(),
-                ));
-            }
-        };
-
+        // Streaming mode: return stream as before
         Ok((
             [(
                 axum::http::header::CONTENT_TYPE,
@@ -209,6 +232,7 @@ async fn main() {
             # OLLAMA_BASE_URL=https://api.example.com
             #
             # USE=openai
+            # #Openai api Configuration
             # OPENAI_API_KEY=your_api_key
             # OPENAI_BASE_URL=https://api.example.com
             # MODELS=qwen3-coder-plus,qwen3
@@ -223,13 +247,13 @@ async fn main() {
 
     let provider_use = env::var("USE").unwrap();
     let provider: Box<dyn Provider + Send + Sync> = match provider_use.as_str() {
-        // "ollama" => {
-        //     // 获取环境变量中的认证信息
-        //     let user = env::var("OLLAMA_USER")?;
-        //     let password = env::var("OLLAMA_PASS")?;
-        //     let url = env::var("OLLAMA_BASE_URL")?;
-        //     OllamaProvider::new()
-        // }
+        "ollama" => {
+            // 获取环境变量中的认证信息
+            let user = env::var("OLLAMA_USER").unwrap();
+            let password = env::var("OLLAMA_PASS").unwrap();
+            let url = env::var("OLLAMA_BASE_URL").unwrap();
+            Box::new(OllamaProvider::new(url, user, password))
+        }
         "openai" => {
             let api_key = env::var("OPENAI_API_KEY").unwrap();
             let url = env::var("OPENAI_BASE_URL").unwrap();

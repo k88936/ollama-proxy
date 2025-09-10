@@ -1,3 +1,4 @@
+pub mod ollama_provider;
 pub mod openai_provider;
 
 use crate::models::{Message, Model, StreamChatChunk};
@@ -21,13 +22,6 @@ impl std::error::Error for ProviderError {}
 // 定义可克隆的 Provider trait
 #[async_trait::async_trait]
 pub trait Provider {
-    async fn chat(
-        &self,
-        model: &String,
-        messages: &[Message],
-        option: Option<Value>,
-    ) -> Result<String, ProviderError>;
-
     fn chat_stream(
         &self,
         model: &String,
@@ -42,4 +36,5 @@ use futures::Stream;
 use std::pin::Pin;
 // 定义ChatChunkStream类型用于处理聊天流
 
-pub type ChatChunkStream = Pin<Box<dyn Stream<Item = Result<StreamChatChunk, ProviderError>> + Send>>;
+pub type ChatChunkStream =
+    Pin<Box<dyn Stream<Item = Result<StreamChatChunk, ProviderError>> + Send>>;
