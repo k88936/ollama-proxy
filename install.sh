@@ -44,7 +44,7 @@ User=$CURRENT_USER
 Group=$CURRENT_GROUP
 WorkingDirectory=$(pwd)
 ExecStart=$BINARY_PATH
-Restart=unless-stopped
+Restart=always
 Environment=RUST_LOG=info
 
 [Install]

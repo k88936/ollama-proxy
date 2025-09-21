@@ -218,7 +218,7 @@ async fn main() {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    info!("Starting fake Ollama API server...");
+    info!("Starting Ollama API server...");
     // 获取配置文件路径，尝试多种可能的路径
     let config_path = get_config_path();
 
@@ -283,7 +283,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:11434")
         .await
         .unwrap();
-    info!("🚀 Fake Ollama API server listening on http://localhost:11434");
+    info!("Ollama API server listening on http://localhost:11434");
 
     axum::serve(listener, app).await.unwrap();
 }

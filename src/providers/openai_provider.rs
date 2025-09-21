@@ -2,12 +2,9 @@ use crate::models::{Message, Model, StreamChatChunk};
 use crate::providers::{ChatChunkStream, Provider, ProviderError};
 use chrono;
 use futures::StreamExt;
-use reqwest::{Error, Response};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::fmt::format;
 use std::time::Duration;
-use tracing::log::debug;
 
 #[derive(Clone)]
 pub struct OpenAIProvider {
