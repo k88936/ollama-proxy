@@ -1,9 +1,12 @@
+mod config;
+
+pub use config::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Model {
-    pub name: String,
-    pub model: String,
+    pub name: String,// real name
+    pub model: String,// display name
     pub modified_at: Option<String>,
     pub size: Option<u64>,
     pub digest: Option<String>,

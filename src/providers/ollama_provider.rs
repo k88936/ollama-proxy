@@ -1,5 +1,6 @@
+use std::sync::{Arc, RwLock};
 use crate::models::{Message, Model, StreamChatChunk};
-use crate::providers::{ChatChunkStream, Provider, ProviderError};
+use crate::providers::{map_model_name, ChatChunkStream, Provider, ProviderError};
 use base64::Engine;
 use chrono;
 use futures::StreamExt;
@@ -10,8 +11,9 @@ use std::time::Duration;
 #[derive(Clone)]
 pub struct OllamaProvider {
     base_url: String,
-    username: String,
     password: String,
+    name: String,
+    models: Arc<RwLock<Vec<Model>>>,
 }
 
 #[derive(Deserialize)]
@@ -26,16 +28,12 @@ struct MessageContent {
 }
 
 impl OllamaProvider {
-    /// Create a new OllamaProvider.
-    /// - base_url: Base URL for the Ollama API
-    /// - username: Username for basic authentication (optional)
-    /// - password: Password for basic authentication (optional)
-    /// - models: Allowed or preferred model names list
-    pub fn new(base_url: String, username: String, password: String) -> Self {
+    pub fn new(name: String, base_url: String, password: String) -> Self {
         Self {
+            name,
             base_url,
-            username,
             password,
+            models: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -100,15 +98,13 @@ impl Provider for OllamaProvider {
 
         let model_name = model.clone();
 
-        let username = self.username.clone();
         let password = self.password.clone();
         let stream = async_stream::stream! {
             let request_builder = client
                 .post(&url)
                 .header("Content-Type", "application/json")
+                .header("Authorization", format!("Bearer {}", password))
                 .json(&body);
-
-            let request_builder = authed(request_builder, &username,&password);
 
             let response = match request_builder
                 .send()
@@ -208,9 +204,10 @@ impl Provider for OllamaProvider {
 
         let url = format!("{}/api/tags", &self.base_url.trim_end_matches('/'));
 
-        let request_builder = client.get(&url).header("Content-Type", "application/json");
-
-        let request_builder = authed(request_builder, &self.username, &self.password);
+        let request_builder = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.password))
+            .header("Content-Type", "application/json");
 
         let response = request_builder.send().await.map_err(|e| ProviderError {
             message: format!("HTTP request failed: {}", e),
@@ -226,6 +223,28 @@ impl Provider for OllamaProvider {
             message: format!("Failed to parse JSON response: {}", e),
         })?;
 
-        Ok(ollama_response.models)
+        let models = ollama_response
+            .models
+            .iter()
+            .map(|model| Model {
+                model: map_model_name(&self.name, &model.model),
+                ..model.clone()
+            })
+            .collect();
+
+        Ok(models)
+    }
+
+    async fn get_models_cached(&self) -> Vec<Model> {
+        {
+            let cached = self.models.read().unwrap();
+            if !cached.is_empty() {
+                return cached.clone();
+            }
+        }
+        let models = self.get_models().await.unwrap_or_default();
+        let mut cache = self.models.write().unwrap();
+        *cache = models.clone();
+        models
     }
 }

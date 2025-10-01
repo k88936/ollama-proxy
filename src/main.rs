@@ -10,12 +10,14 @@ mod models;
 mod providers;
 
 use providers::Provider;
-
 struct AppState {
-    provider: Box<dyn Provider + Send + Sync>,
+    providers: Vec<Box<dyn Provider + Send + Sync>>,
 }
 
-use crate::models::{ChatRequest, GenerateRequest, GenerateResponse, ModelsResponse};
+use crate::models::{
+    ApiType, ChatRequest, GenerateRequest, GenerateResponse, Model, ModelsResponse,
+};
+use crate::providers::ollama_provider::OllamaProvider;
 use crate::providers::openai_provider::OpenAIProvider;
 use axum::http::Request;
 use axum::{
@@ -27,7 +29,6 @@ use axum::{
 use futures::StreamExt;
 use indoc::indoc;
 use std::sync::Arc;
-use crate::providers::ollama_provider::OllamaProvider;
 
 /// Collects all content from a chat stream and concatenates it into a single string
 async fn collect_content_from_stream(
@@ -48,7 +49,18 @@ async fn collect_content_from_stream(
 
     Ok(content)
 }
-
+async fn get_provider_by_model(
+    model_name: String,
+    providers: &Vec<Box<dyn Provider + Send + Sync>>,
+) -> (&Box<dyn Provider + Send + Sync>, String) {
+    for provider in providers {
+        let models = provider.get_models_cached().await;
+        if let Some(model) = models.iter().find(|m| m.model == model_name) {
+            return (provider, model.name.clone());
+        }
+    }
+    panic!("Model '{}' not found in any provider", model_name)
+}
 async fn handle_status(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
     "Ollama is running".to_string()
 }
@@ -56,8 +68,13 @@ async fn handle_status(State(_state): State<Arc<AppState>>) -> impl IntoResponse
 async fn handle_tags(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ModelsResponse>, (StatusCode, String)> {
-    // Lock the state for mutation
-    let models = state.provider.get_models().await.unwrap();
+    // Collect all models from providers
+    let mut models: Vec<Model> = Vec::new();
+    for provider in &state.providers {
+        let mut provider_models = provider.get_models_cached().await;
+        models.append(&mut provider_models);
+    }
+
     Ok(Json(ModelsResponse { models }))
 }
 
@@ -72,10 +89,9 @@ async fn handle_generate(
     }];
 
     // Use the provider's chat_stream method to generate response
-    let stream = match state
-        .provider
-        .chat(&payload.model, &messages, payload.options.clone())
-    {
+    let (provider, model) = get_provider_by_model(payload.model, &state.providers).await;
+
+    let stream = match provider.chat(&model, &messages, payload.options.clone()) {
         Ok(stream) => stream,
         Err(_) => {
             return Err((
@@ -97,7 +113,7 @@ async fn handle_generate(
     };
 
     let resp = GenerateResponse {
-        model: payload.model,
+        model,
         created_at: chrono::Utc::now().to_rfc3339(),
         response: content,
         done: true,
@@ -117,11 +133,9 @@ async fn handle_chat(
     Json(payload): Json<ChatRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     // Use streaming method for both streaming and non-streaming requests
-    let stream = match state.provider.chat(
-        &payload.model,
-        &payload.messages,
-        payload.options.clone(),
-    ) {
+    let (provider, model) = get_provider_by_model(payload.model, &state.providers).await;
+
+    let stream = match provider.chat(&model, &payload.messages, payload.options.clone()) {
         Ok(stream) => stream,
         Err(_) => {
             return Err((
@@ -145,7 +159,7 @@ async fn handle_chat(
         };
 
         let resp = models::ChatResponse {
-            model: payload.model,
+            model,
             created_at: chrono::Utc::now().to_rfc3339(),
             message: crate::models::Message {
                 role: "assistant".to_string(),
@@ -224,50 +238,46 @@ async fn main() {
 
     // 如果配置文件不存在，创建示例配置文件
     if !config_path.exists() {
-        let example_config = indoc! { r#"
-            # USE=ollama
-            # #Remote Ollama Proxy Configuration
-            # OLLAMA_USER=your_username
-            # OLLAMA_PASS=your_password
-            # OLLAMA_BASE_URL=https://api.example.com
-            #
-            # USE=openai
-            # #Openai api Configuration
-            # OPENAI_API_KEY=your_api_key
-            # OPENAI_BASE_URL=https://api.example.com
-            # MODELS=qwen3-coder-plus,qwen3
-            "#};
+        let example_config = models::get_config_demo();
         fs::write(&config_path, example_config).unwrap();
         info!("已创建示例配置文件: {:?}", config_path);
         return;
     }
 
     // 从配置文件加载环境变量
-    dotenvy::from_filename(config_path.to_str().unwrap()).ok();
+    let config_file = fs::File::open(&config_path).expect("Failed to open config file");
+    let config: models::Config = serde_yaml::from_reader(config_file).unwrap();
 
-    let provider_use = env::var("USE").unwrap();
-    let provider: Box<dyn Provider + Send + Sync> = match provider_use.as_str() {
-        "ollama" => {
-            // 获取环境变量中的认证信息
-            let user = env::var("OLLAMA_USER").unwrap();
-            let password = env::var("OLLAMA_PASS").unwrap();
-            let url = env::var("OLLAMA_BASE_URL").unwrap();
-            Box::new(OllamaProvider::new(url, user, password))
-        }
-        "openai" => {
-            let api_key = env::var("OPENAI_API_KEY").unwrap();
-            let url = env::var("OPENAI_BASE_URL").unwrap();
-            let models = env::var("MODELS")
-                .unwrap()
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .collect::<Vec<String>>();
-            Box::new(OpenAIProvider::new(api_key, url, models))
-        }
-        _ => panic!("provider not found"),
-    };
+    let providers = config
+        .items
+        .iter()
+        .map(|item| {
+            let secret = if let Some(secret) = &item.secret {
+                secret.clone()
+            } else {
+                "".to_string()
+            };
+            let provider: Box<dyn Provider + Send + Sync> = match item.api_type {
+                ApiType::Ollama => Box::new(OllamaProvider::new(
+                    item.name.clone(),
+                    item.url.clone(),
+                    secret,
+                )),
+                ApiType::Openai => {
+                    let models = item.models.clone().unwrap_or_default();
+                    Box::new(OpenAIProvider::new(
+                        item.name.clone(),
+                        secret,
+                        item.url.clone(),
+                        models,
+                    ))
+                }
+            };
+            provider
+        })
+        .collect();
 
-    let state = AppState { provider };
+    let state = AppState { providers };
     let state = Arc::new(state);
     let app: Router = Router::new()
         .route("/", get(handle_status))
@@ -280,7 +290,7 @@ async fn main() {
         .with_state(state)
         .layer(axum::middleware::from_fn(log_request_middleware)); // 应用日志中间件到所有路由
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:11434")
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", config.port))
         .await
         .unwrap();
     info!("Ollama API server listening on http://localhost:11434");
@@ -288,14 +298,15 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 fn get_config_path() -> std::path::PathBuf {
+    let file_name = "ollama-proxy.yaml";
     // 尝试获取 HOME 目录 (Unix/Linux/macOS)
     if let Ok(home_dir) = env::var("HOME") {
-        return Path::new(&home_dir).join(".ollama-proxy");
+        return Path::new(&home_dir).join(file_name);
     }
 
     // 尝试获取 USERPROFILE 目录 (Windows)
     if let Ok(home_dir) = env::var("USERPROFILE") {
-        return Path::new(&home_dir).join(".ollama-proxy");
+        return Path::new(&home_dir).join(file_name);
     }
     panic!("cant get user home")
 }

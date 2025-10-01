@@ -1,5 +1,5 @@
 use crate::models::{Message, Model, StreamChatChunk};
-use crate::providers::{ChatChunkStream, Provider, ProviderError};
+use crate::providers::{map_model_name, ChatChunkStream, Provider, ProviderError};
 use chrono;
 use futures::StreamExt;
 use serde::Deserialize;
@@ -8,8 +8,9 @@ use std::time::Duration;
 
 #[derive(Clone)]
 pub struct OpenAIProvider {
+    name: String,
     key: String,
-    models: Vec<String>,
+    models: Vec<Model>,
     base_url: String,
 }
 
@@ -29,15 +30,21 @@ struct Delta {
 }
 
 impl OpenAIProvider {
-    /// Create a new OpenAIProvider.
-    /// - key: API key
-    /// - base_url: Optional base url
-    /// - models: Allowed or preferred model names list
-    pub fn new(key: String, base_url: String, models: Vec<String>) -> Self {
+    pub fn new(name: String, key: String, base_url: String, models: Vec<String>) -> Self {
         Self {
+            name: name.clone(),
             key,
             base_url,
-            models,
+            models: models.iter()
+                .map(|model| Model {
+                    name: model.clone(),
+                    model: map_model_name(&name, model),
+                    modified_at: None,
+                    size: None,
+                    digest: None,
+                    details: None,
+                })
+                .collect(),
         }
     }
 
@@ -225,17 +232,10 @@ impl Provider for OpenAIProvider {
     }
 
     async fn get_models(&self) -> Result<Vec<Model>, ProviderError> {
-        Ok(self
-            .models
-            .iter()
-            .map(|name| Model {
-                name: name.to_string(),
-                model: name.to_string(),
-                modified_at: None,
-                size: None,
-                digest: None,
-                details: None,
-            })
-            .collect())
+        Ok(self.models.clone())
+    }
+
+    async fn get_models_cached(&self) -> Vec<Model> {
+        self.models.clone()
     }
 }
