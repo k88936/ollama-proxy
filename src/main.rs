@@ -14,9 +14,7 @@ struct AppState {
     providers: Vec<Box<dyn Provider + Send + Sync>>,
 }
 
-use crate::models::{
-    ApiType, ChatRequest, GenerateRequest, GenerateResponse, Model, ModelsResponse,
-};
+use crate::models::{ApiType, ChatRequest, Config, GenerateRequest, GenerateResponse, Model, ModelsResponse};
 use crate::providers::ollama_provider::OllamaProvider;
 use crate::providers::openai_provider::OpenAIProvider;
 use axum::http::Request;
@@ -27,7 +25,6 @@ use axum::{
     Router,
 };
 use futures::StreamExt;
-use indoc::indoc;
 use std::sync::Arc;
 
 /// Collects all content from a chat stream and concatenates it into a single string
@@ -49,7 +46,10 @@ async fn collect_content_from_stream(
 
     Ok(content)
 }
-async fn get_provider_by_model(
+pub fn map_model_name(provider_name: &String, model_name: &String) -> String {
+    format!("{}-{}", provider_name, model_name)
+}
+async fn unmap_model(
     model_name: String,
     providers: &Vec<Box<dyn Provider + Send + Sync>>,
 ) -> (&Box<dyn Provider + Send + Sync>, String) {
@@ -59,7 +59,10 @@ async fn get_provider_by_model(
             return (provider, model.name.clone());
         }
     }
-    panic!("Model '{}' not found in any provider", model_name)
+    panic!(
+        "Model '{}' not found in any provider, but that is impossible",
+        model_name
+    )
 }
 async fn handle_status(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
     "Ollama is running".to_string()
@@ -74,7 +77,6 @@ async fn handle_tags(
         let mut provider_models = provider.get_models().await;
         models.append(&mut provider_models);
     }
-
     Ok(Json(ModelsResponse { models }))
 }
 
@@ -89,7 +91,7 @@ async fn handle_generate(
     }];
 
     // Use the provider's chat_stream method to generate response
-    let (provider, model) = get_provider_by_model(payload.model, &state.providers).await;
+    let (provider, model) = unmap_model(payload.model, &state.providers).await;
 
     let stream = match provider.chat(&model, &messages, payload.options.clone()) {
         Ok(stream) => stream,
@@ -133,7 +135,7 @@ async fn handle_chat(
     Json(payload): Json<ChatRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     // Use streaming method for both streaming and non-streaming requests
-    let (provider, model) = get_provider_by_model(payload.model, &state.providers).await;
+    let (provider, model) = unmap_model(payload.model, &state.providers).await;
 
     let stream = match provider.chat(&model, &payload.messages, payload.options.clone()) {
         Ok(stream) => stream,
@@ -147,7 +149,7 @@ async fn handle_chat(
 
     let stream_mode = payload.stream.unwrap_or(true);
     if !stream_mode {
-        // Non-streaming: collect all chunks from stream and concatenate content
+        // Non-streaming: collect all chunks from a stream and concatenate content
         let content = match collect_content_from_stream(stream).await {
             Ok(content) => content,
             Err(_) => {
@@ -184,7 +186,7 @@ async fn handle_chat(
             axum::body::Body::from_stream(
                 stream
                     .map(|obj| serde_json::to_string(&obj.unwrap())) // This returns Result<String, _>
-                    .map_ok(|s| format!("{}\n", s)), // ✅ Transform Ok(String) -> Ok(String + \n)
+                    .map_ok(|s| format!("{}\n", s)), // Transform Ok(String) -> Ok(String + \n)
             ),
         )
             .into_response())
@@ -195,7 +197,6 @@ async fn not_found() -> (StatusCode, String) {
     info!("=== Unmatched Route Request ===");
     (StatusCode::NOT_FOUND, "Endpoint not found".to_string())
 }
-
 // 一个中间件: 记录所有请求的详细信息
 async fn log_request_middleware(
     request: Request<axum::body::Body>,
@@ -244,41 +245,11 @@ async fn main() {
         return;
     }
 
-    // 从配置文件加载环境变量
+    // 从配置文件加载
     let config_file = fs::File::open(&config_path).expect("Failed to open config file");
     let config: models::Config = serde_yaml::from_reader(config_file).unwrap();
-
-    let providers = config
-        .items
-        .iter()
-        .map(|item| {
-            let secret = if let Some(secret) = &item.secret {
-                secret.clone()
-            } else {
-                "".to_string()
-            };
-            let models = item.models.clone().unwrap_or_default();
-            let provider: Box<dyn Provider + Send + Sync> = match item.api_type {
-                ApiType::Ollama => Box::new(OllamaProvider::new(
-                    item.name.clone(),
-                    item.url.clone(),
-                    secret,
-                    models,
-                )),
-                ApiType::Openai => {
-                    Box::new(OpenAIProvider::new(
-                        item.name.clone(),
-                        secret,
-                        item.url.clone(),
-                        models,
-                    ))
-                }
-            };
-            provider
-        })
-        .collect();
-
-    let state = AppState { providers };
+    
+    let state = AppState { providers: load_providers(&config) };
     let state = Arc::new(state);
     let app: Router = Router::new()
         .route("/", get(handle_status))
@@ -287,10 +258,10 @@ async fn main() {
         .route("/api/chat", post(handle_chat))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
-        .fallback(not_found) // 处理未匹配的路由
+        .fallback(not_found)
         .with_state(state)
-        .layer(axum::middleware::from_fn(log_request_middleware)); // 应用日志中间件到所有路由
-
+        .layer(axum::middleware::from_fn(log_request_middleware));
+    // we should not allow lan for security's sake
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", config.port))
         .await
         .unwrap();
@@ -298,16 +269,56 @@ async fn main() {
 
     axum::serve(listener, app).await.unwrap();
 }
+
+fn load_providers(config: &Config) -> Vec<Box<dyn Provider + Send + Sync>> {
+    let providers = config
+        .providers
+        .iter()
+        .map(|item| {
+            let secret = if let Some(secret) = &item.secret {
+                secret.clone()
+            } else {
+                "".to_string()
+            };
+            let models = item.models.clone().unwrap_or_default();
+            let models = models
+                .iter()
+                .map(|model| Model {
+                    name: model.clone(),
+                    model: map_model_name(&item.name, model),
+                    modified_at: None,
+                    size: None,
+                    digest: None,
+                    details: None,
+                })
+                .collect();
+            let provider: Box<dyn Provider + Send + Sync> = match item.api_type {
+                ApiType::Ollama => Box::new(OllamaProvider::new(
+                    item.url.clone(),
+                    secret,
+                    models,
+                )),
+                ApiType::Openai => Box::new(OpenAIProvider::new(
+                    item.url.clone(),
+                    secret,
+                    models,
+                )),
+            };
+            provider
+        })
+        .collect();
+    providers
+}
+
 fn get_config_path() -> std::path::PathBuf {
     let file_name = "ollama-proxy.yaml";
     // 尝试获取 HOME 目录 (Unix/Linux/macOS)
     if let Ok(home_dir) = env::var("HOME") {
         return Path::new(&home_dir).join(file_name);
     }
-
     // 尝试获取 USERPROFILE 目录 (Windows)
     if let Ok(home_dir) = env::var("USERPROFILE") {
         return Path::new(&home_dir).join(file_name);
     }
-    panic!("cant get user home")
+    panic!("cant get user home by env: HOME/USERPROFILE");
 }

@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 pub struct Config {
     pub port: i16,
-    pub items: Vec<Item>,
+    pub providers: Vec<ProviderInfo>,
 }
 #[derive(Serialize, Deserialize)]
-pub struct Item {
+pub struct ProviderInfo {
     pub name: String,
     pub url: String,
     pub secret: Option<String>,
@@ -23,15 +23,15 @@ pub enum ApiType {
 pub fn get_config_demo() -> String {
     let config = Config {
         port: 11434,
-        items: vec![
-            Item {
+        providers: vec![
+            ProviderInfo {
                 name: "ollama".to_string(),
                 url: "localhost:1143x".to_string(),
                 secret: None,
                 models: None,
                 api_type: ApiType::Ollama,
             },
-            Item {
+            ProviderInfo {
                 name: "aliyun".to_string(),
                 url: "https://dashscope.aliyuncs.com/compatible-mode/".to_string(),
                 secret: "secret-key".to_string().into(),
@@ -47,7 +47,7 @@ pub fn get_config_demo() -> String {
                 .into(),
                 api_type: ApiType::Openai,
             },
-            Item {
+            ProviderInfo {
                 name: "tsinghua".to_string(),
                 url: "https://llmapi.paratera.com".to_string(),
                 secret: "secret-key".to_string().into(),

@@ -1,17 +1,14 @@
 use crate::models::{Message, Model, StreamChatChunk};
-use crate::providers::{map_model_name, ChatChunkStream, Provider, ProviderError};
-use base64::Engine;
+use crate::providers::{ChatChunkStream, Provider, ProviderError};
 use chrono;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
-
 #[derive(Clone)]
 pub struct OllamaProvider {
     base_url: String,
     password: String,
-    name: String,
     models: Vec<Model>,
 }
 
@@ -27,22 +24,11 @@ struct MessageContent {
 }
 
 impl OllamaProvider {
-    pub fn new(name: String, base_url: String, password: String, models: Vec<String>) -> Self {
+    pub fn new( base_url: String, password: String, models: Vec<Model>) -> Self {
         Self {
-            name:name.clone(),
             base_url,
             password,
-            models: models
-                .iter()
-                .map(|model| Model {
-                    name: model.clone(),
-                    model: map_model_name(&name, model),
-                    modified_at: None,
-                    size: None,
-                    digest: None,
-                    details: None,
-                })
-                .collect(),
+            models
         }
     }
 
@@ -56,16 +42,6 @@ impl OllamaProvider {
             })
     }
 }
-fn authed(
-    request_builder: reqwest::RequestBuilder,
-    user: &String,
-    pass: &String,
-) -> reqwest::RequestBuilder {
-    let credentials = format!("{}:{}", user, pass);
-    let encoded_credentials = base64::engine::general_purpose::STANDARD.encode(credentials);
-    request_builder.header("Authorization", format!("Basic {}", encoded_credentials))
-}
-
 fn build_request_body(model: &String, messages: &[Message], option: Option<Value>) -> Value {
     let msgs: Vec<Value> = messages
         .iter()

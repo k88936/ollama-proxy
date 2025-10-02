@@ -17,8 +17,6 @@ impl std::fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
-// 为Box<dyn Provider>实现Clone trait
-
 // 定义可克隆的 Provider trait
 #[async_trait::async_trait]
 pub trait Provider {
@@ -30,9 +28,6 @@ pub trait Provider {
     ) -> Result<ChatChunkStream, ProviderError>;
 
     async fn get_models(&self) -> Vec<Model>;
-}
-pub fn map_model_name(provider_name: &String, model_name: &String) -> String {
-    format!("{}-{}", provider_name, model_name)
 }
 
 use futures::Stream;

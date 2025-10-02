@@ -1,14 +1,12 @@
 use crate::models::{Message, Model, StreamChatChunk};
-use crate::providers::{map_model_name, ChatChunkStream, Provider, ProviderError};
+use crate::providers::{ChatChunkStream, Provider, ProviderError};
 use chrono;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
-
 #[derive(Clone)]
 pub struct OpenAIProvider {
-    name: String,
     key: String,
     models: Vec<Model>,
     base_url: String,
@@ -30,21 +28,11 @@ struct Delta {
 }
 
 impl OpenAIProvider {
-    pub fn new(name: String, key: String, base_url: String, models: Vec<String>) -> Self {
+    pub fn new( base_url: String, key: String, models: Vec<Model>) -> Self {
         Self {
-            name: name.clone(),
             key,
             base_url,
-            models: models.iter()
-                .map(|model| Model {
-                    name: model.clone(),
-                    model: map_model_name(&name, model),
-                    modified_at: None,
-                    size: None,
-                    digest: None,
-                    details: None,
-                })
-                .collect(),
+            models
         }
     }
 

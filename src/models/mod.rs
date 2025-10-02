@@ -37,6 +37,7 @@ pub struct ModelsResponse {
 pub struct GenerateRequest {
     pub model: String,
     pub prompt: String,
+    #[allow(dead_code)]
     pub stream: Option<bool>,
     pub options: Option<serde_json::Value>,
 }
@@ -45,6 +46,7 @@ pub struct GenerateRequest {
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
+    #[allow(dead_code)]
     pub stream: Option<bool>,
     pub options: Option<serde_json::Value>,
 }
