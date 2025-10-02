@@ -54,7 +54,7 @@ async fn get_provider_by_model(
     providers: &Vec<Box<dyn Provider + Send + Sync>>,
 ) -> (&Box<dyn Provider + Send + Sync>, String) {
     for provider in providers {
-        let models = provider.get_models_cached().await;
+        let models = provider.get_models().await;
         if let Some(model) = models.iter().find(|m| m.model == model_name) {
             return (provider, model.name.clone());
         }
@@ -71,7 +71,7 @@ async fn handle_tags(
     // Collect all models from providers
     let mut models: Vec<Model> = Vec::new();
     for provider in &state.providers {
-        let mut provider_models = provider.get_models_cached().await;
+        let mut provider_models = provider.get_models().await;
         models.append(&mut provider_models);
     }
 
@@ -257,14 +257,15 @@ async fn main() {
             } else {
                 "".to_string()
             };
+            let models = item.models.clone().unwrap_or_default();
             let provider: Box<dyn Provider + Send + Sync> = match item.api_type {
                 ApiType::Ollama => Box::new(OllamaProvider::new(
                     item.name.clone(),
                     item.url.clone(),
                     secret,
+                    models,
                 )),
                 ApiType::Openai => {
-                    let models = item.models.clone().unwrap_or_default();
                     Box::new(OpenAIProvider::new(
                         item.name.clone(),
                         secret,

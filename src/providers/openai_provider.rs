@@ -231,11 +231,7 @@ impl Provider for OpenAIProvider {
         Ok(Box::pin(stream))
     }
 
-    async fn get_models(&self) -> Result<Vec<Model>, ProviderError> {
-        Ok(self.models.clone())
-    }
-
-    async fn get_models_cached(&self) -> Vec<Model> {
+    async fn get_models(&self) -> Vec<Model> {
         self.models.clone()
     }
 }

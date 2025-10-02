@@ -1,4 +1,3 @@
-use std::sync::{Arc, RwLock};
 use crate::models::{Message, Model, StreamChatChunk};
 use crate::providers::{map_model_name, ChatChunkStream, Provider, ProviderError};
 use base64::Engine;
@@ -13,7 +12,7 @@ pub struct OllamaProvider {
     base_url: String,
     password: String,
     name: String,
-    models: Arc<RwLock<Vec<Model>>>,
+    models: Vec<Model>,
 }
 
 #[derive(Deserialize)]
@@ -28,12 +27,22 @@ struct MessageContent {
 }
 
 impl OllamaProvider {
-    pub fn new(name: String, base_url: String, password: String) -> Self {
+    pub fn new(name: String, base_url: String, password: String, models: Vec<String>) -> Self {
         Self {
-            name,
+            name:name.clone(),
             base_url,
             password,
-            models: Arc::new(RwLock::new(Vec::new())),
+            models: models
+                .iter()
+                .map(|model| Model {
+                    name: model.clone(),
+                    model: map_model_name(&name, model),
+                    modified_at: None,
+                    size: None,
+                    digest: None,
+                    details: None,
+                })
+                .collect(),
         }
     }
 
@@ -199,52 +208,8 @@ impl Provider for OllamaProvider {
         Ok(Box::pin(stream))
     }
 
-    async fn get_models(&self) -> Result<Vec<Model>, ProviderError> {
-        let client = self.build_client()?;
 
-        let url = format!("{}/api/tags", &self.base_url.trim_end_matches('/'));
-
-        let request_builder = client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.password))
-            .header("Content-Type", "application/json");
-
-        let response = request_builder.send().await.map_err(|e| ProviderError {
-            message: format!("HTTP request failed: {}", e),
-        })?;
-
-        let response_text = response.text().await.map_err(|e| ProviderError {
-            message: format!("Failed to read response: {}", e),
-        })?;
-
-        // Parse the response to extract models
-        let ollama_response: crate::models::ModelsResponse = serde_json::from_str(&response_text)
-            .map_err(|e| ProviderError {
-            message: format!("Failed to parse JSON response: {}", e),
-        })?;
-
-        let models = ollama_response
-            .models
-            .iter()
-            .map(|model| Model {
-                model: map_model_name(&self.name, &model.model),
-                ..model.clone()
-            })
-            .collect();
-
-        Ok(models)
-    }
-
-    async fn get_models_cached(&self) -> Vec<Model> {
-        {
-            let cached = self.models.read().unwrap();
-            if !cached.is_empty() {
-                return cached.clone();
-            }
-        }
-        let models = self.get_models().await.unwrap_or_default();
-        let mut cache = self.models.write().unwrap();
-        *cache = models.clone();
-        models
+    async fn get_models(&self) -> Vec<Model> {
+        self.models.clone()
     }
 }

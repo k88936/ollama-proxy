@@ -29,8 +29,7 @@ pub trait Provider {
         option: Option<Value>,
     ) -> Result<ChatChunkStream, ProviderError>;
 
-    async fn get_models(&self) -> Result<Vec<Model>, ProviderError>;
-    async fn get_models_cached(&self) -> Vec<Model>;
+    async fn get_models(&self) -> Vec<Model>;
 }
 pub fn map_model_name(provider_name: &String, model_name: &String) -> String {
     format!("{}-{}", provider_name, model_name)

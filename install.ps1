@@ -50,7 +50,7 @@ try {
     nssm set $serviceName AppExit Default Restart
     nssm set $serviceName AppRestartDelay 10000
     nssm set $serviceName AppThrottle 15000
-    nssm set $serviceName AppExitPostScript 1
+
     
     # Start the service
     Start-Service $serviceName
