@@ -914,6 +914,7 @@ dependencies = [
  "futures",
  "futures-util",
  "http-body-util",
+ "hyper",
  "indoc",
  "reqwest",
  "serde",

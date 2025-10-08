@@ -1,11 +1,11 @@
-use axum::middleware::Next;
 use axum::routing::{get, post};
 use futures_util::TryStreamExt;
 // Make sure this is in scope
 use std::path::Path;
 use std::{env, fs};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::info;
+use tracing::{debug, info};
+use async_stream::stream;
 mod models;
 mod providers;
 
@@ -17,7 +17,6 @@ struct AppState {
 use crate::models::{ApiType, ChatRequest, Config, GenerateRequest, GenerateResponse, Model, ModelsResponse};
 use crate::providers::ollama_provider::OllamaProvider;
 use crate::providers::openai_provider::OpenAIProvider;
-use axum::http::Request;
 use axum::{
     extract::{Json, State},
     http::StatusCode,
@@ -29,7 +28,7 @@ use std::sync::Arc;
 
 /// Collects all content from a chat stream and concatenates it into a single string
 async fn collect_content_from_stream(
-    mut stream: crate::providers::ChatChunkStream,
+    mut stream: providers::ChatChunkStream,
 ) -> Result<String, ()> {
     let mut content = String::new();
 
@@ -47,7 +46,7 @@ async fn collect_content_from_stream(
     Ok(content)
 }
 pub fn map_model_name(provider_name: &String, model_name: &String) -> String {
-    format!("{}-{}", provider_name, model_name)
+    format!("[{}]-{}", provider_name, model_name)
 }
 async fn unmap_model(
     model_name: String,
@@ -77,6 +76,7 @@ async fn handle_tags(
         let mut provider_models = provider.get_models().await;
         models.append(&mut provider_models);
     }
+    debug!("models: {}",models.iter().map(|m| m.model.clone()).collect::<Vec<String>>().join(","));
     Ok(Json(ModelsResponse { models }))
 }
 
@@ -85,12 +85,12 @@ async fn handle_generate(
     Json(payload): Json<GenerateRequest>,
 ) -> Result<Json<GenerateResponse>, (StatusCode, String)> {
     // Create a simple message for chat
-    let messages = vec![crate::models::Message {
+    let messages = vec![models::Message {
         role: "user".to_string(),
         content: payload.prompt.clone(),
     }];
 
-    // Use the provider's chat_stream method to generate response
+    // Use the provider's chat_stream method to generate a response
     let (provider, model) = unmap_model(payload.model, &state.providers).await;
 
     let stream = match provider.chat(&model, &messages, payload.options.clone()) {
@@ -103,7 +103,7 @@ async fn handle_generate(
         }
     };
 
-    // Collect all chunks from stream and concatenate content
+    // Collect all chunks from the stream and concatenate content
     let content = match collect_content_from_stream(stream).await {
         Ok(content) => content,
         Err(_) => {
@@ -126,7 +126,8 @@ async fn handle_generate(
         eval_count: 0,
         eval_duration: 0,
     };
-
+    
+    debug!("\n<<< generate: {{{}}} \n>>> response: {{{}}}",payload.prompt, resp.response);
     Ok(Json(resp))
 }
 
@@ -163,7 +164,7 @@ async fn handle_chat(
         let resp = models::ChatResponse {
             model,
             created_at: chrono::Utc::now().to_rfc3339(),
-            message: crate::models::Message {
+            message: models::Message {
                 role: "assistant".to_string(),
                 content,
             },
@@ -175,16 +176,47 @@ async fn handle_chat(
             eval_duration: 0,
         };
 
+        // Log chat similar to generate: last user message and response
+        let last_user_message = payload
+            .messages
+            .iter()
+            .rfind(|m| m.role == "user")
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        debug!("\n<<< chat: {{{}}} \n>>> response {{{}}}", last_user_message, resp.message.content);
+
         Ok(Json(resp).into_response())
     } else {
-        // Streaming mode: return stream as before
+        // Streaming mode with logging similar to generate
+        let last_user_message = payload
+            .messages
+            .iter()
+            .rfind(|m| m.role == "user")
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        let user_for_log = last_user_message.clone();
+
+        let wrapped_stream = stream! {
+            let mut acc = String::new();
+            let mut s = stream;
+            while let Some(item) = s.next().await {
+                if let Ok(chunk) = &item {
+                    if !chunk.done {
+                        acc.push_str(&chunk.message.content);
+                    }
+                }
+                yield item;
+            }
+            debug!("\n<<< chat(stream): {{{}}} \n>>> response {{{}}}", user_for_log, acc);
+        };
+
         Ok((
             [(
                 axum::http::header::CONTENT_TYPE,
                 "application/x-ndjson".to_string(),
             )],
             axum::body::Body::from_stream(
-                stream
+                wrapped_stream
                     .map(|obj| serde_json::to_string(&obj.unwrap())) // This returns Result<String, _>
                     .map_ok(|s| format!("{}\n", s)), // Transform Ok(String) -> Ok(String + \n)
             ),
@@ -197,40 +229,11 @@ async fn not_found() -> (StatusCode, String) {
     info!("=== Unmatched Route Request ===");
     (StatusCode::NOT_FOUND, "Endpoint not found".to_string())
 }
-// 一个中间件: 记录所有请求的详细信息
-async fn log_request_middleware(
-    request: Request<axum::body::Body>,
-    next: Next,
-) -> impl IntoResponse {
-    // 记录请求的详细信息
-    info!("=== Incoming Request ===");
-    info!("Method: {}", request.method());
-    info!("URI: {}", request.uri());
-    info!("Version: {:?}", request.version());
-    info!("Headers:");
-    for (name, value) in request.headers() {
-        info!("  {}: {:?}", name, value);
-    }
-
-    // 继续处理请求
-    let response = next.run(request).await;
-
-    // 记录响应信息
-    info!("=== Response ===");
-    info!("Status: {}", response.status());
-    info!("Headers:");
-    for (name, value) in response.headers() {
-        info!("  {}: {:?}", name, value);
-    }
-
-    response
-}
-
 #[tokio::main]
 async fn main() {
     // 初始化日志记录
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(tracing::Level::DEBUG)
         .init();
 
     info!("Starting Ollama API server...");
@@ -247,7 +250,7 @@ async fn main() {
 
     // 从配置文件加载
     let config_file = fs::File::open(&config_path).expect("Failed to open config file");
-    let config: models::Config = serde_yaml::from_reader(config_file).unwrap();
+    let config: Config = serde_yaml::from_reader(config_file).unwrap();
     
     let state = AppState { providers: load_providers(&config) };
     let state = Arc::new(state);
@@ -259,8 +262,7 @@ async fn main() {
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .fallback(not_found)
-        .with_state(state)
-        .layer(axum::middleware::from_fn(log_request_middleware));
+        .with_state(state);
     // we should not allow lan for security's sake
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", config.port))
         .await

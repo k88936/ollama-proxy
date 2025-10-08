@@ -26,7 +26,7 @@ pub fn get_config_demo() -> String {
         providers: vec![
             ProviderInfo {
                 name: "ollama".to_string(),
-                url: "localhost:1143x".to_string(),
+                url: "https://some.ollama.service:port".to_string(),
                 secret: None,
                 models: None,
                 api_type: ApiType::Ollama,
