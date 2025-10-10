@@ -1,3 +1,4 @@
+use async_stream::stream;
 use axum::routing::{get, post};
 use futures_util::TryStreamExt;
 // Make sure this is in scope
@@ -5,7 +6,6 @@ use std::path::Path;
 use std::{env, fs};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{debug, info};
-use async_stream::stream;
 mod models;
 mod providers;
 
@@ -14,22 +14,22 @@ struct AppState {
     providers: Vec<Box<dyn Provider + Send + Sync>>,
 }
 
-use crate::models::{ApiType, ChatRequest, Config, GenerateRequest, GenerateResponse, Model, ModelsResponse};
+use crate::models::{
+    ApiType, ChatRequest, Config, GenerateRequest, GenerateResponse, Model, ModelsResponse,
+};
 use crate::providers::ollama_provider::OllamaProvider;
 use crate::providers::openai_provider::OpenAIProvider;
 use axum::{
+    Router,
     extract::{Json, State},
     http::StatusCode,
     response::IntoResponse,
-    Router,
 };
 use futures::StreamExt;
 use std::sync::Arc;
 
 /// Collects all content from a chat stream and concatenates it into a single string
-async fn collect_content_from_stream(
-    mut stream: providers::ChatChunkStream,
-) -> Result<String, ()> {
+async fn collect_content_from_stream(mut stream: providers::ChatChunkStream) -> Result<String, ()> {
     let mut content = String::new();
 
     while let Some(result) = stream.next().await {
@@ -76,7 +76,14 @@ async fn handle_tags(
         let mut provider_models = provider.get_models().await;
         models.append(&mut provider_models);
     }
-    debug!("models: {}",models.iter().map(|m| m.model.clone()).collect::<Vec<String>>().join(","));
+    debug!(
+        "models: {}",
+        models
+            .iter()
+            .map(|m| m.model.clone())
+            .collect::<Vec<String>>()
+            .join(",")
+    );
     Ok(Json(ModelsResponse { models }))
 }
 
@@ -126,8 +133,11 @@ async fn handle_generate(
         eval_count: 0,
         eval_duration: 0,
     };
-    
-    debug!("\n<<< generate: {{{}}} \n>>> response: {{{}}}",payload.prompt, resp.response);
+
+    debug!(
+        "\n<<< generate: {{{}}} \n>>> response: {{{}}}",
+        payload.prompt, resp.response
+    );
     Ok(Json(resp))
 }
 
@@ -183,7 +193,10 @@ async fn handle_chat(
             .rfind(|m| m.role == "user")
             .map(|m| m.content.clone())
             .unwrap_or_default();
-        debug!("\n<<< chat: {{{}}} \n>>> response {{{}}}", last_user_message, resp.message.content);
+        debug!(
+            "\n<<< chat: {{{}}} \n>>> response {{{}}}",
+            last_user_message, resp.message.content
+        );
 
         Ok(Json(resp).into_response())
     } else {
@@ -251,8 +264,10 @@ async fn main() {
     // 从配置文件加载
     let config_file = fs::File::open(&config_path).expect("Failed to open config file");
     let config: Config = serde_yaml::from_reader(config_file).unwrap();
-    
-    let state = AppState { providers: load_providers(&config) };
+
+    let state = AppState {
+        providers: load_providers(&config),
+    };
     let state = Arc::new(state);
     let app: Router = Router::new()
         .route("/", get(handle_status))
@@ -267,7 +282,10 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", config.port))
         .await
         .unwrap();
-    info!("Ollama API server listening on http://127.0.0.1:{}",config.port);
+    info!(
+        "Ollama API server listening on http://127.0.0.1:{}",
+        config.port
+    );
 
     axum::serve(listener, app).await.unwrap();
 }
@@ -295,16 +313,8 @@ fn load_providers(config: &Config) -> Vec<Box<dyn Provider + Send + Sync>> {
                 })
                 .collect();
             let provider: Box<dyn Provider + Send + Sync> = match item.api_type {
-                ApiType::Ollama => Box::new(OllamaProvider::new(
-                    item.url.clone(),
-                    secret,
-                    models,
-                )),
-                ApiType::Openai => Box::new(OpenAIProvider::new(
-                    item.url.clone(),
-                    secret,
-                    models,
-                )),
+                ApiType::Ollama => Box::new(OllamaProvider::new(item.url.clone(), secret, models)),
+                ApiType::Openai => Box::new(OpenAIProvider::new(item.url.clone(), secret, models)),
             };
             provider
         })
@@ -315,12 +325,10 @@ fn load_providers(config: &Config) -> Vec<Box<dyn Provider + Send + Sync>> {
 fn get_config_path() -> std::path::PathBuf {
     let file_name = "ollama-proxy.yaml";
     // 尝试获取 HOME 目录 (Unix/Linux/macOS)
-    if let Ok(home_dir) = env::var("HOME") {
-        return Path::new(&home_dir).join(file_name);
-    }
-    // 尝试获取 USERPROFILE 目录 (Windows)
-    if let Ok(home_dir) = env::var("USERPROFILE") {
-        return Path::new(&home_dir).join(file_name);
+    for env_name in vec!["HOME", "USERPROFILE"] {
+        if let Ok(home_dir) = env::var(env_name) {
+            return Path::new(&home_dir).join(file_name);
+        }
     }
     panic!("cant get user home by env: HOME/USERPROFILE");
 }
