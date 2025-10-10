@@ -28,11 +28,11 @@ struct Delta {
 }
 
 impl OpenAIProvider {
-    pub fn new( base_url: String, key: String, models: Vec<Model>) -> Self {
+    pub fn new(base_url: String, key: String, models: Vec<Model>) -> Self {
         Self {
             key,
             base_url,
-            models
+            models,
         }
     }
 
@@ -65,15 +65,38 @@ impl OpenAIProvider {
         });
 
         // Merge options if provided
-        if let Some(Value::Object(opts)) = option {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in opts {
-                    obj.insert(k, v);
-                }
+        if let Some(Value::Object(opts)) = option
+            && let Some(obj) = body.as_object_mut()
+        {
+            for (k, v) in opts {
+                obj.insert(k, v);
             }
         }
 
         body
+    }
+
+    fn build_request(
+        &self,
+        model: &String,
+        messages: &[Message],
+        option: Option<Value>,
+    ) -> Result<reqwest::RequestBuilder, ProviderError> {
+        let client = self.build_client()?;
+        let url = format!(
+            "{}/v1/chat/completions",
+            self.base_url.trim_end_matches('/')
+        );
+        let body = self.build_request_body(model, messages, option);
+        let key = self.key.clone();
+
+        let builder = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", key))
+            .header("Content-Type", "application/json")
+            .json(&body);
+
+        Ok(builder)
     }
 }
 
@@ -85,24 +108,11 @@ impl Provider for OpenAIProvider {
         messages: &[Message],
         option: Option<Value>,
     ) -> Result<ChatChunkStream, ProviderError> {
-        let client = self.build_client()?;
-
-        let url = format!(
-            "{}/v1/chat/completions",
-            self.base_url.trim_end_matches('/')
-        );
-
-        let body = self.build_request_body(model, messages, option);
-
-        let key = self.key.clone();
         let model_name = model.clone();
+        let request = self.build_request(model, messages, option)?;
 
         let stream = async_stream::stream! {
-            let response = match client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", key))
-                .header("Content-Type", "application/json")
-                .json(&body)
+            let response = match request
                 .send()
                 .await
             {
@@ -123,6 +133,7 @@ impl Provider for OpenAIProvider {
                 });
                 return;
             }
+
 
             let mut stream = response.bytes_stream();
             let mut buffer = String::new();
@@ -168,24 +179,21 @@ impl Provider for OpenAIProvider {
                     if let Some(data) = line.strip_prefix("data: ") {
                         match serde_json::from_str::<OpenaiChatChunk>(data) {
                             Ok(chunk) => {
-                                if let Some(choice) = chunk.choices.first() {
-                                    if let Some(delta) = &choice.delta {
-                                        if let Some(content) = &delta.content {
-                                            // Add delay between chunks to simulate realistic streaming
-                                            tokio::time::sleep(Duration::from_millis(20)).await;
-                                            let thunk = StreamChatChunk {
-                                                model: model_name.clone(),
-                                                created_at: chrono::Utc::now().to_rfc3339(),
-                                                message: Message {
-                                                    role: "assistant".to_string(),
-                                                    content: content.clone(),
-                                                },
-                                                done: false,
-                                            };
+                                if let Some(choice) = chunk.choices.first()
+                                    && let Some(delta) = &choice.delta
+                                    && let Some(content) = &delta.content
+                                {
+                                    let thunk = StreamChatChunk {
+                                        model: model_name.clone(),
+                                        created_at: chrono::Utc::now().to_rfc3339(),
+                                        message: Message {
+                                            role: "assistant".to_string(),
+                                            content: content.clone(),
+                                        },
+                                        done: false,
+                                    };
 
-                                            yield Ok(thunk);
-                                        }
-                                    }
+                                    yield Ok(thunk);
                                 }
                             }
                             Err(e) => {
@@ -203,7 +211,7 @@ impl Provider for OpenAIProvider {
                 }
             }
 
-            // Send final "done" message
+            // Send a final "done" message
             let final_chunk = StreamChatChunk {
                 model: model_name,
                 created_at: chrono::Utc::now().to_rfc3339(),

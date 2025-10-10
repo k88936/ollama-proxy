@@ -17,6 +17,7 @@ struct AppState {
 use crate::models::{
     ApiType, ChatRequest, Config, GenerateRequest, GenerateResponse, Model, ModelsResponse,
 };
+
 use crate::providers::ollama_provider::OllamaProvider;
 use crate::providers::openai_provider::OpenAIProvider;
 use axum::{

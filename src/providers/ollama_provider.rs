@@ -8,7 +8,7 @@ use std::time::Duration;
 #[derive(Clone)]
 pub struct OllamaProvider {
     base_url: String,
-    password: String,
+    secret: String,
     models: Vec<Model>,
 }
 
@@ -24,11 +24,11 @@ struct MessageContent {
 }
 
 impl OllamaProvider {
-    pub fn new( base_url: String, password: String, models: Vec<Model>) -> Self {
+    pub fn new(base_url: String, password: String, models: Vec<Model>) -> Self {
         Self {
             base_url,
-            password,
-            models
+            secret: password,
+            models,
         }
     }
 
@@ -41,30 +41,53 @@ impl OllamaProvider {
                 message: format!("Failed to build HTTP client: {}", e),
             })
     }
-}
-fn build_request_body(model: &String, messages: &[Message], option: Option<Value>) -> Value {
-    let msgs: Vec<Value> = messages
-        .iter()
-        .map(|m| json!({ "role": m.role, "content": m.content }))
-        .collect();
+    fn build_request_body(
+        &self,
+        model: &String,
+        messages: &[Message],
+        option: Option<Value>,
+    ) -> Value {
+        let msgs: Vec<Value> = messages
+            .iter()
+            .map(|m| json!({ "role": m.role, "content": m.content }))
+            .collect();
 
-    // Build base body
-    let mut body = json!({
-        "model": model,
-        "messages": msgs,
-        "stream": true,
-    });
+        // Build base body
+        let mut body = json!({
+            "model": model,
+            "messages": msgs,
+            "stream": true,
+        });
 
-    // Merge options if provided
-    if let Some(Value::Object(opts)) = option {
-        if let Some(obj) = body.as_object_mut() {
+        // Merge options if provided
+        if let Some(Value::Object(opts)) = option
+            && let Some(obj) = body.as_object_mut()
+        {
             for (k, v) in opts {
                 obj.insert(k, v);
             }
         }
+        body
     }
 
-    body
+    fn build_request(
+        &self,
+        model: &String,
+        messages: &[Message],
+        option: Option<Value>,
+    ) -> Result<reqwest::RequestBuilder, ProviderError> {
+        let client = self.build_client()?;
+        let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
+        let body = self.build_request_body(model, messages, option);
+
+        let request_builder = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", self.secret))
+            .json(&body);
+
+        Ok(request_builder)
+    }
 }
 
 #[async_trait::async_trait]
@@ -75,23 +98,12 @@ impl Provider for OllamaProvider {
         messages: &[Message],
         option: Option<Value>,
     ) -> Result<ChatChunkStream, ProviderError> {
-        let client = self.build_client()?;
-
-        let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
-
-        let body = build_request_body(model, messages, option);
-
         let model_name = model.clone();
+        let request = self.build_request(model, messages, option)?;
 
-        let password = self.password.clone();
         let stream = async_stream::stream! {
-            let request_builder = client
-                .post(&url)
-                .header("Content-Type", "application/json")
-                .header("Authorization", format!("Bearer {}", password))
-                .json(&body);
 
-            let response = match request_builder
+            let response = match request
                 .send()
                 .await
             {
@@ -104,7 +116,7 @@ impl Provider for OllamaProvider {
                 }
             };
 
-            if !response.status().is_success() {
+            if !response.status().is_success()  {
                 let status = response.status();
                 let error_text = response.text().await.unwrap_or_default();
                 yield Err(ProviderError {
@@ -151,8 +163,6 @@ impl Provider for OllamaProvider {
                     match serde_json::from_str::<OllamaChatChunk>(&line) {
                         Ok(chunk) => {
                             if let Some(message) = chunk.message {
-                                // Add delay between chunks to simulate realistic streaming
-                                tokio::time::sleep(Duration::from_millis(20)).await;
                                 let thunk = StreamChatChunk {
                                     model: model_name.clone(),
                                     created_at: chrono::Utc::now().to_rfc3339(),
@@ -183,7 +193,6 @@ impl Provider for OllamaProvider {
 
         Ok(Box::pin(stream))
     }
-
 
     async fn get_models(&self) -> Vec<Model> {
         self.models.clone()
