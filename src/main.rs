@@ -267,7 +267,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", config.port))
         .await
         .unwrap();
-    info!("Ollama API server listening on http://localhost:{}",config.port);
+    info!("Ollama API server listening on http://127.0.0.1:{}",config.port);
 
     axum::serve(listener, app).await.unwrap();
 }
