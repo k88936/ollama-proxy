@@ -8,27 +8,9 @@ I created this to call ollama on my remote server to work for me on my local lap
 * we can switch to different provider just in the panel
 * support attaching Bearer auth to ollama api call, which is important for remote ollama service.
 
-<img src="docs/shotmd-20251002-113104.jpeg" alt="effect in jetbrains ai assistant" />
+<img src="docs/in-jb-ai.png" alt="effect in jetbrains ai assistant" />
 
 
-
-## principle
-```mermaid
-sequenceDiagram
-	autonumber
-	participant A as Local App(JetBrains AI, etc.)
-	participant P as ollama-proxy
-	participant OA as OpenAI-compatible/Ollama
-
-	note over A,P: Local network (plain HTTP to proxy)
-	A->>P: HTTP request (e.g. POST /api/chat)
-
-    note over P,OA: HTTPS + Bearer / API Key
-    P->>OA: HTTPS + Authorization: Bearer <secret>
-    OA-->>P: JSON / stream
-
-	P-->>A: Proxied response (mirrors upstream schema)
-```
 
 ## installation
 the artifact is a single executable, I have made an aur and a scoop package with service
@@ -101,3 +83,26 @@ providers:
     - openai/o3-pro
   api_type: Openai
 ```
+
+## principle
+### About proxy and auth
+```mermaid
+sequenceDiagram
+	autonumber
+	participant A as Local App(JetBrains AI, etc.)
+	participant P as ollama-proxy
+	participant OA as OpenAI-compatible/Ollama
+
+	note over A,P: Local network (plain HTTP to proxy)
+	A->>P: HTTP request (e.g. POST /api/chat)
+
+    note over P,OA: HTTPS + Bearer / API Key
+    P->>OA: HTTPS + Authorization: Bearer <secret>
+    OA-->>P: JSON / stream
+
+	P-->>A: Proxied response (mirrors upstream schema)
+
+```
+### About model name
+The proxy system manages models by attaching a `[provider-name]-` prefix to the model name string shown to the user (e.g., `JB ai-assistant`). The user-selected model name determines the provider, and this name is used to choose the correct provider to handle the request. When the proxy calls the real provider, it uses the original (unmodified) model name string.
+
