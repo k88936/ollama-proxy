@@ -84,7 +84,7 @@ impl OpenAIProvider {
     ) -> Result<reqwest::RequestBuilder, ProviderError> {
         let client = self.build_client()?;
         let url = format!(
-            "{}/v1/chat/completions",
+            "{}/chat/completions",
             self.base_url.trim_end_matches('/')
         );
         let body = self.build_request_body(model, messages, option);
