@@ -33,9 +33,9 @@ pub fn get_config_demo() -> String {
             },
             ProviderInfo {
                 name: "aliyun".to_string(),
-                url: "https://dashscope.aliyuncs.com/compatible-mode/".to_string(),
+                url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
                 secret: "secret-key".to_string().into(),
-                models: vec![
+                models: [
                     "qwen3-coder-plus",
                     "Moonshot-Kimi-K2-Instruct",
                     "qwen3-max",
@@ -48,10 +48,21 @@ pub fn get_config_demo() -> String {
                 api_type: ApiType::Openai,
             },
             ProviderInfo {
-                name: "tsinghua".to_string(),
-                url: "https://llmapi.paratera.com".to_string(),
+                name: "openrouter".to_string(),
+                url: "https://openrouter.ai/api/v1".to_string(),
                 secret: "secret-key".to_string().into(),
-                models: vec!["Qwen3-Coder-Plus", "GLM-4.5"]
+                models: ["anthropic/claude-sonnet-4.5", "openai/o3-pro"]
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .into(),
+                api_type: ApiType::Openai,
+            },
+            ProviderInfo {
+                name: "tsinghua".to_string(),
+                url: "https://llmapi.paratera.com/v1".to_string(),
+                secret: "secret-key".to_string().into(),
+                models: ["Qwen3-Coder-Plus", "GLM-4.5"]
                     .iter()
                     .map(|x| x.to_string())
                     .collect::<Vec<_>>()

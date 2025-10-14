@@ -76,7 +76,7 @@ providers:
   api_type: Ollama
 
 - name: aliyun
-  url: https://dashscope.aliyuncs.com/compatible-mode/
+  url: https://dashscope.aliyuncs.com/compatible-mode/v1
   secret: sk
   models:
   - qwen3-coder-plus
@@ -86,10 +86,18 @@ providers:
   api_type: Openai
 
 - name: tsinghua
-  url: https://llmapi.paratera.com
+  url: https://llmapi.paratera.com/v1
   secret: sk
   models:
   - Qwen3-Coder-Plus
   - GLM-4.5
+  api_type: Openai
+
+- name: openrouter
+  url: https://openrouter.ai/api/v1
+  secret: sk
+  models:
+    - anthropic/claude-sonnet-4.5
+    - openai/o3-pro
   api_type: Openai
 ```
