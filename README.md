@@ -1,5 +1,5 @@
 # ollama-proxy
-this is a proxy service to wrap local ollama request with a basic auth header and https to remote ollama auth-required service
+this is a proxy service to wrap local ollama request with a basic auth header and https to remote ollama auth-required or openai-compatible service
 
 I created this to call ollama on my remote server to work for me on my local laptop (for example, JetBrains AI assistant)
 

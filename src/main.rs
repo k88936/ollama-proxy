@@ -5,7 +5,7 @@ use futures_util::TryStreamExt;
 use std::path::Path;
 use std::{env, fs};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 mod models;
 mod providers;
 
@@ -200,6 +200,8 @@ async fn handle_chat(
         );
 
         Ok(Json(resp).into_response())
+
+    // stream mode
     } else {
         // Streaming mode with logging similar to generate
         let last_user_message = payload
@@ -240,7 +242,7 @@ async fn handle_chat(
 }
 // 处理未匹配路由的函数
 async fn not_found() -> (StatusCode, String) {
-    info!("=== Unmatched Route Request ===");
+    error!("=== Unmatched Route Request ===");
     (StatusCode::NOT_FOUND, "Endpoint not found".to_string())
 }
 #[tokio::main]
@@ -326,7 +328,7 @@ fn load_providers(config: &Config) -> Vec<Box<dyn Provider + Send + Sync>> {
 fn get_config_path() -> std::path::PathBuf {
     let file_name = "ollama-proxy.yaml";
     // 尝试获取 HOME 目录 (Unix/Linux/macOS)
-    for env_name in vec!["HOME", "USERPROFILE"] {
+    for env_name in ["HOME", "USERPROFILE"] {
         if let Ok(home_dir) = env::var(env_name) {
             return Path::new(&home_dir).join(file_name);
         }
