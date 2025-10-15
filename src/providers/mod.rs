@@ -2,11 +2,13 @@ pub mod ollama_provider;
 pub mod openai_provider;
 
 use crate::models::{Message, Model, StreamChatChunk};
+use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ProviderError {
     pub message: String,
+    pub request_url: Option<String>,
 }
 
 impl std::fmt::Display for ProviderError {

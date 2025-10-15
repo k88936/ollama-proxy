@@ -21,13 +21,13 @@ use crate::models::{
 use crate::providers::ollama_provider::OllamaProvider;
 use crate::providers::openai_provider::OpenAIProvider;
 use axum::{
-    Router,
     extract::{Json, State},
     http::StatusCode,
     response::IntoResponse,
+    Router,
 };
-use futures::StreamExt;
 use std::sync::Arc;
+use tokio_stream::StreamExt;
 
 /// Collects all content from a chat stream and concatenates it into a single string
 async fn collect_content_from_stream(mut stream: providers::ChatChunkStream) -> Result<String, ()> {
@@ -104,10 +104,7 @@ async fn handle_generate(
     let stream = match provider.chat(&model, &messages, payload.options.clone()) {
         Ok(stream) => stream,
         Err(_) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to generate response".to_string(),
-            ));
+            panic!("provider error during generate: chat initialization failed");
         }
     };
 
@@ -115,10 +112,7 @@ async fn handle_generate(
     let content = match collect_content_from_stream(stream).await {
         Ok(content) => content,
         Err(_) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to generate response".to_string(),
-            ));
+            panic!("provider error during generate: stream failed");
         }
     };
 
@@ -152,10 +146,7 @@ async fn handle_chat(
     let stream = match provider.chat(&model, &payload.messages, payload.options.clone()) {
         Ok(stream) => stream,
         Err(_) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to generate response".to_string(),
-            ));
+            panic!("provider error during chat: chat initialization failed");
         }
     };
 
@@ -165,10 +156,7 @@ async fn handle_chat(
         let content = match collect_content_from_stream(stream).await {
             Ok(content) => content,
             Err(_) => {
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to generate response".to_string(),
-                ));
+                panic!("provider error during chat: stream failed");
             }
         };
 
@@ -211,8 +199,7 @@ async fn handle_chat(
             .map(|m| m.content.clone())
             .unwrap_or_default();
         let user_for_log = last_user_message.clone();
-
-        let wrapped_stream = stream! {
+        let wrapped_stream_debug = stream! {
             let mut acc = String::new();
             let mut s = stream;
             while let Some(item) = s.next().await {
@@ -232,8 +219,8 @@ async fn handle_chat(
                 "application/x-ndjson".to_string(),
             )],
             axum::body::Body::from_stream(
-                wrapped_stream
-                    .map(|obj| serde_json::to_string(&obj.unwrap())) // This returns Result<String, _>
+                wrapped_stream_debug
+                    .map(|obj| serde_json::to_string(&obj.unwrap()))
                     .map_ok(|s| format!("{}\n", s)), // Transform Ok(String) -> Ok(String + \n)
             ),
         )

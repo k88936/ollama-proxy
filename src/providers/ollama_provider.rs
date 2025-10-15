@@ -39,6 +39,7 @@ impl OllamaProvider {
             .build()
             .map_err(|e| ProviderError {
                 message: format!("Failed to build HTTP client: {}", e),
+                request_url: None,
             })
     }
     fn build_request_body(
@@ -72,16 +73,16 @@ impl OllamaProvider {
 
     fn build_request(
         &self,
+        url: &str,
         model: &String,
         messages: &[Message],
         option: Option<Value>,
     ) -> Result<reqwest::RequestBuilder, ProviderError> {
         let client = self.build_client()?;
-        let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
         let body = self.build_request_body(model, messages, option);
 
         let request_builder = client
-            .post(&url)
+            .post(url)
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", self.secret))
             .json(&body);
@@ -99,7 +100,8 @@ impl Provider for OllamaProvider {
         option: Option<Value>,
     ) -> Result<ChatChunkStream, ProviderError> {
         let model_name = model.clone();
-        let request = self.build_request(model, messages, option)?;
+        let request_url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
+        let request = self.build_request(&request_url, model, messages, option)?;
 
         let stream = async_stream::stream! {
 
@@ -111,6 +113,7 @@ impl Provider for OllamaProvider {
                 Err(e) => {
                     yield Err(ProviderError {
                         message: format!("HTTP request failed: {}", e),
+                        request_url: Some(request_url.clone()),
                     });
                     return;
                 }
@@ -121,6 +124,7 @@ impl Provider for OllamaProvider {
                 let error_text = response.text().await.unwrap_or_default();
                 yield Err(ProviderError {
                     message: format!("HTTP error {}: {}", status, error_text),
+                    request_url: Some(request_url.clone()),
                 });
                 return;
             }
@@ -134,6 +138,7 @@ impl Provider for OllamaProvider {
                     Err(e) => {
                         yield Err(ProviderError {
                             message: format!("Stream read error: {}", e),
+                            request_url: Some(request_url.clone()),
                         });
                         return;
                     }
@@ -144,6 +149,7 @@ impl Provider for OllamaProvider {
                     Err(e) => {
                         yield Err(ProviderError {
                             message: format!("UTF-8 decode error: {}", e),
+                            request_url: Some(request_url.clone()),
                         });
                         return;
                     }
@@ -183,6 +189,7 @@ impl Provider for OllamaProvider {
                         Err(e) => {
                             yield Err(ProviderError {
                                 message: format!("JSON parse error: {}", e),
+                                request_url: Some(request_url.clone()),
                             });
                             return;
                         }
