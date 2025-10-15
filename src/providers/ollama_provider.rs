@@ -61,11 +61,11 @@ impl OllamaProvider {
         });
 
         // Merge options if provided
-        if let Some(Value::Object(opts)) = option
-            && let Some(obj) = body.as_object_mut()
-        {
-            for (k, v) in opts {
-                obj.insert(k, v);
+        if let Some(Value::Object(opts)) = option {
+            if let Some(obj) = body.as_object_mut() {
+                for (k, v) in opts {
+                    obj.insert(k, v);
+                }
             }
         }
         body

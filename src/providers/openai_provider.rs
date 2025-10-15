@@ -66,11 +66,11 @@ impl OpenAIProvider {
         });
 
         // Merge options if provided
-        if let Some(Value::Object(opts)) = option
-            && let Some(obj) = body.as_object_mut()
-        {
-            for (k, v) in opts {
-                obj.insert(k, v);
+        if let Some(Value::Object(opts)) = option {
+            if let Some(obj) = body.as_object_mut() {
+                for (k, v) in opts {
+                    obj.insert(k, v);
+                }
             }
         }
 
@@ -182,21 +182,22 @@ impl Provider for OpenAIProvider {
                     if let Some(data) = line.strip_prefix("data: ") {
                         match serde_json::from_str::<OpenaiChatChunk>(data) {
                             Ok(chunk) => {
-                                if let Some(choice) = chunk.choices.first()
-                                    && let Some(delta) = &choice.delta
-                                    && let Some(content) = &delta.content
-                                {
-                                    let thunk = StreamChatChunk {
-                                        model: model_name.clone(),
-                                        created_at: chrono::Utc::now().to_rfc3339(),
-                                        message: Message {
-                                            role: "assistant".to_string(),
-                                            content: content.clone(),
-                                        },
-                                        done: false,
-                                    };
+                                if let Some(choice) = chunk.choices.first() {
+                                    if let Some(delta) = &choice.delta {
+                                        if let Some(content) = &delta.content {
+                                            let thunk = StreamChatChunk {
+                                                model: model_name.clone(),
+                                                created_at: chrono::Utc::now().to_rfc3339(),
+                                                message: Message {
+                                                    role: "assistant".to_string(),
+                                                    content: content.clone(),
+                                                },
+                                                done: false,
+                                            };
 
-                                    yield Ok(thunk);
+                                            yield Ok(thunk);
+                                        }
+                                    }
                                 }
                             }
                             Err(e) => {
